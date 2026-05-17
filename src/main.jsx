@@ -32,6 +32,7 @@ const SETTLEMENT_PAGE_SIZE = 20
 const USER_PAGE_SIZE = 25
 const DONATION_PAGE_SIZE = 25
 const COMPLIANCE_PAGE_SIZE = 25
+const KYC_UPGRADE_PAGE_SIZE = 25
 
 const DEFAULT_PAGINATION = {
   page: 1,
@@ -46,6 +47,7 @@ const tabs = [
   { id: "settlements", label: "Settlements", icon: Landmark },
   { id: "gifts", label: "Gifts", icon: Gift },
   { id: "compliance", label: "Compliance", icon: AlertTriangle },
+  { id: "kyc-upgrades", label: "KYC Upgrades", icon: ShieldCheck },
   { id: "changes", label: "Account Changes", icon: LockKeyhole },
   { id: "users", label: "Super Admin", icon: Users },
 ]
@@ -75,6 +77,13 @@ const complianceStatusOptions = [
   { value: "resolved", label: "Resolved" },
 ]
 
+const kycUpgradeStatusOptions = [
+  { value: "all", label: "All statuses" },
+  { value: "awaiting_review", label: "Awaiting review" },
+  { value: "approved", label: "Approved" },
+  { value: "rejected", label: "Rejected" },
+]
+
 function formatCurrency(value) {
   return `NGN ${Number(value || 0).toLocaleString()}`
 }
@@ -92,6 +101,32 @@ function formatDate(value) {
 function maskAccount(value) {
   const account = String(value || "")
   return account ? `**** ${account.slice(-4)}` : "No account"
+}
+
+function maskIdentityNumber(value) {
+  const digits = String(value || "").trim()
+  if (!digits) return "Not submitted"
+  if (digits.length <= 4) return digits
+  return `${"*".repeat(Math.max(0, digits.length - 4))}${digits.slice(-4)}`
+}
+
+function resolveIdentityNumber(user, type) {
+  const keyUpper = type === "bvn" ? "Bvn" : "Nin"
+  const identity = user?.identity || {}
+  const candidates = [
+    identity?.[type],
+    identity?.[`submitted${keyUpper}`],
+    user?.[type],
+    user?.[`submitted${keyUpper}`],
+    user?.[`submitted${String(type).toUpperCase()}`],
+  ]
+
+  for (const candidate of candidates) {
+    const value = String(candidate || "").trim()
+    if (value) return value
+  }
+
+  return ""
 }
 
 function formatSourceAccountNumber(value) {
@@ -218,6 +253,21 @@ function buildUserParams({ search, page, limit }) {
   return params.toString()
 }
 
+function buildKycUpgradeParams(filters, includePagination = true) {
+  const params = new URLSearchParams()
+
+  if (includePagination) {
+    params.set("page", String(filters.page || 1))
+    params.set("limit", String(filters.limit || KYC_UPGRADE_PAGE_SIZE))
+  }
+
+  if (filters.status && filters.status !== "all") {
+    params.set("status", filters.status)
+  }
+
+  return params.toString()
+}
+
 function getFilenameFromDisposition(value) {
   const match = String(value || "").match(/filename="?([^"]+)"?/i)
   return match?.[1] || ""
@@ -285,6 +335,59 @@ function buildComplianceInflowSummary(inflow) {
   ].join("\n")
 }
 
+function getVerificationTypesForRequest(type) {
+  const normalized = String(type || "both").toLowerCase().trim()
+  if (normalized === "bvn") return ["bvn"]
+  if (normalized === "nin") return ["nin"]
+  return ["bvn", "nin"]
+}
+
+function buildVerificationToast(payload, type) {
+  if (typeof payload?.success === "boolean") {
+    const mismatches = Array.isArray(payload?.mismatches) ? payload.mismatches : []
+    const mismatchText = mismatches.length
+      ? mismatches
+          .map((item) => `${item?.field || "field"}: ${item?.message || item?.status || "NO_MATCH"}`)
+          .join(" | ")
+      : ""
+
+    return {
+      tone: payload.success ? "success" : "danger",
+      message: payload.success
+        ? String(payload?.message || "Identity verification passed and saved.")
+        : [String(payload?.message || "Identity verification failed."), mismatchText].filter(Boolean).join(" | "),
+    }
+  }
+
+  const verification = payload?.verification || payload?.user?.identityVerification || {}
+  const requestedTypes = getVerificationTypesForRequest(type)
+  const failed = requestedTypes.filter((item) => {
+    const status = String(verification?.[item]?.status || "").toLowerCase()
+    return status !== "verified"
+  })
+
+  if (!failed.length) {
+    const label = requestedTypes.length === 2 ? "BVN and NIN" : requestedTypes[0].toUpperCase()
+    return {
+      tone: "success",
+      message: `Monnify ${label} verification passed and saved.`,
+    }
+  }
+
+  const details = failed
+    .map((item) => {
+      const snapshot = verification?.[item] || {}
+      const reason = String(snapshot.responseMessage || snapshot.matchStatus || "verification failed").trim()
+      return `${item.toUpperCase()}: ${reason}`
+    })
+    .join(" | ")
+
+  return {
+    tone: "danger",
+    message: `Verification completed but not validated. ${details}`,
+  }
+}
+
 function App() {
   const [token, setToken] = useState(() => window.localStorage.getItem(TOKEN_KEY) || "")
   const [admin, setAdmin] = useState(null)
@@ -338,6 +441,16 @@ function App() {
   const [selectedComplianceInflowId, setSelectedComplianceInflowId] = useState("")
   const [selectedComplianceInflowDetails, setSelectedComplianceInflowDetails] = useState(null)
   const [complianceEdits, setComplianceEdits] = useState({})
+  const [kycUpgradeSubmissions, setKycUpgradeSubmissions] = useState([])
+  const [kycUpgradePagination, setKycUpgradePagination] = useState(() =>
+    normalizePagination(null, KYC_UPGRADE_PAGE_SIZE),
+  )
+  const [kycUpgradeFilters, setKycUpgradeFilters] = useState({
+    status: "all",
+    page: 1,
+    limit: KYC_UPGRADE_PAGE_SIZE,
+  })
+  const [selectedKycUpgradeId, setSelectedKycUpgradeId] = useState("")
   const [changeRequests, setChangeRequests] = useState([])
   const [users, setUsers] = useState([])
   const [usersPagination, setUsersPagination] = useState(() =>
@@ -454,6 +567,24 @@ function App() {
     [complianceFilters, request],
   )
 
+  const loadKycUpgradeSubmissions = useCallback(
+    async (overrides = {}) => {
+      const nextFilters = {
+        ...kycUpgradeFilters,
+        ...overrides,
+        limit: overrides.limit || kycUpgradeFilters.limit || KYC_UPGRADE_PAGE_SIZE,
+      }
+      const payload = await request(`/portal/kyc-upgrade-submissions?${buildKycUpgradeParams(nextFilters)}`)
+
+      setKycUpgradeSubmissions(Array.isArray(payload?.submissions) ? payload.submissions : [])
+      setKycUpgradePagination(
+        normalizePagination(payload?.pagination, nextFilters.limit || KYC_UPGRADE_PAGE_SIZE),
+      )
+      setKycUpgradeFilters(nextFilters)
+    },
+    [kycUpgradeFilters, request],
+  )
+
   const loadUsers = useCallback(
     async (overrides = {}) => {
       const nextSearch = Object.prototype.hasOwnProperty.call(overrides, "search")
@@ -483,6 +614,7 @@ function App() {
         historyPayload,
         donationsPayload,
         compliancePayload,
+        kycUpgradesPayload,
         usersPayload,
       ] = await Promise.all([
         request(`/portal/settlements?${buildSettlementParams(settlementQueueFilters)}`),
@@ -490,6 +622,7 @@ function App() {
         request(`/portal/settlements/history?${buildSettlementParams(settlementFilters)}`),
         request(`/portal/donations?${buildDonationParams(donationFilters)}`),
         request(`/portal/compliance-inflows?${buildComplianceParams(complianceFilters)}`),
+        request(`/portal/kyc-upgrade-submissions?${buildKycUpgradeParams(kycUpgradeFilters)}`),
         request(
           `/portal/users?${buildUserParams({
             search: userSearch,
@@ -516,6 +649,10 @@ function App() {
       setCompliancePagination(
         normalizePagination(compliancePayload?.pagination, complianceFilters.limit || COMPLIANCE_PAGE_SIZE),
       )
+      setKycUpgradeSubmissions(Array.isArray(kycUpgradesPayload?.submissions) ? kycUpgradesPayload.submissions : [])
+      setKycUpgradePagination(
+        normalizePagination(kycUpgradesPayload?.pagination, kycUpgradeFilters.limit || KYC_UPGRADE_PAGE_SIZE),
+      )
       setUsers(Array.isArray(usersPayload?.users) ? usersPayload.users : [])
       setUsersPagination(normalizePagination(usersPayload?.pagination, usersPagination.limit || USER_PAGE_SIZE))
     } catch (error) {
@@ -527,6 +664,7 @@ function App() {
     request,
     complianceFilters,
     donationFilters,
+    kycUpgradeFilters,
     settlementFilters,
     settlementQueueFilters,
     token,
@@ -592,6 +730,10 @@ function App() {
     )
   }, [complianceInflows, selectedComplianceInflowDetails, selectedComplianceInflowId])
 
+  const selectedKycUpgradeSubmission = useMemo(() => {
+    return kycUpgradeSubmissions.find((submission) => String(submission.id) === String(selectedKycUpgradeId)) || null
+  }, [kycUpgradeSubmissions, selectedKycUpgradeId])
+
   const selectedSettlement = useMemo(() => {
     return settlements.find((payout) => String(payout.id) === String(selectedSettlementId)) || null
   }, [selectedSettlementId, settlements])
@@ -623,6 +765,12 @@ function App() {
         tone: compliancePagination.total ? "warning" : "success",
       },
       {
+        label: "KYC Upgrades",
+        value: kycUpgradeSubmissions.filter((item) => item.status === "awaiting_review").length,
+        icon: ShieldCheck,
+        tone: kycUpgradeSubmissions.some((item) => item.status === "awaiting_review") ? "warning" : "success",
+      },
+      {
         label: "Account Changes",
         value: changeRequests.filter((item) => item.status === "awaiting_review").length,
         icon: LockKeyhole,
@@ -639,6 +787,7 @@ function App() {
       changeRequests,
       compliancePagination.total,
       donationsPagination.total,
+      kycUpgradeSubmissions,
       settlementHistoryPagination.total,
       settlementQueuePagination.total,
       usersPagination.total,
@@ -685,8 +834,18 @@ function App() {
     setBusyAction(actionKey)
     setToast(null)
     try {
-      const message = await action()
-      setToast({ tone: "success", message: message || "Portal action completed." })
+      const result = await action()
+      const nextToast =
+        result && typeof result === "object" && !Array.isArray(result)
+          ? {
+              tone: result.tone || "success",
+              message: result.message || "Portal action completed.",
+            }
+          : {
+              tone: "success",
+              message: result || "Portal action completed.",
+            }
+      setToast(nextToast)
       await refreshAll()
     } catch (error) {
       setToast({ tone: "danger", message: error.message })
@@ -934,6 +1093,8 @@ function App() {
                   ? donationsPagination.total
                 : tab.id === "compliance"
                   ? compliancePagination.total
+                : tab.id === "kyc-upgrades"
+                  ? kycUpgradeSubmissions.filter((item) => item.status === "awaiting_review").length
                 : tab.id === "changes"
                   ? changeRequests.filter((item) => item.status === "awaiting_review").length
                   : usersPagination.total
@@ -1215,6 +1376,44 @@ function App() {
           />
         ) : null}
 
+        {activeTab === "kyc-upgrades" ? (
+          <KycUpgradesView
+            submissions={kycUpgradeSubmissions}
+            pagination={kycUpgradePagination}
+            filters={kycUpgradeFilters}
+            selectedSubmission={selectedKycUpgradeSubmission}
+            busyAction={busyAction}
+            onFilterChange={(field, value) =>
+              setKycUpgradeFilters((current) => ({ ...current, [field]: value }))
+            }
+            onSearch={() => loadKycUpgradeSubmissions({ page: 1 })}
+            onPageChange={(page) => loadKycUpgradeSubmissions({ page })}
+            onSelectSubmission={(submission) => setSelectedKycUpgradeId(submission?.id || "")}
+            onApproveSubmission={(submission) =>
+              runAction(`approve-kyc-upgrade-${submission.id}`, async () => {
+                await request(`/portal/kyc-upgrade-submissions/${submission.id}/approve`, {
+                  method: "POST",
+                })
+                return `Tier ${submission.targetTier} upgrade approved for ${submission.creatorEmail || submission.creator?.email || "creator"}.`
+              })
+            }
+            onRejectSubmission={(submission) =>
+              runAction(`reject-kyc-upgrade-${submission.id}`, async () => {
+                const rejectionReason = window.prompt("Enter rejection reason") || ""
+                if (!rejectionReason.trim()) {
+                  throw new Error("A rejection reason is required.")
+                }
+
+                await request(`/portal/kyc-upgrade-submissions/${submission.id}/reject`, {
+                  method: "POST",
+                  body: JSON.stringify({ rejectionReason }),
+                })
+                return "KYC upgrade submission rejected."
+              })
+            }
+          />
+        ) : null}
+
         {activeTab === "changes" ? (
           <ChangeRequestsView
             requests={changeRequests}
@@ -1302,11 +1501,14 @@ function App() {
                     },
                   }),
                 })
+                const refreshed = await request(`/portal/users/${user.id}`)
 
                 setSelectedUserDetails((current) =>
-                  current?.user?.id === user.id ? { ...current, user: payload.user } : current,
+                  current?.user?.id === user.id ? refreshed : current,
                 )
-                setUsers((current) => current.map((item) => (item.id === user.id ? payload.user : item)))
+                setUsers((current) =>
+                  current.map((item) => (item.id === user.id ? refreshed.user || payload.user : item)),
+                )
                 setUserEdits((current) => {
                   const next = { ...current }
                   delete next[user.id]
@@ -1340,13 +1542,16 @@ function App() {
                   method: "POST",
                   body: JSON.stringify({ type, force: true }),
                 })
+                const refreshed = await request(`/portal/users/${user.id}`)
 
                 setSelectedUserDetails((current) =>
-                  current?.user?.id === user.id ? { ...current, user: payload.user } : current,
+                  current?.user?.id === user.id ? refreshed : current,
                 )
-                setUsers((current) => current.map((item) => (item.id === user.id ? payload.user : item)))
+                setUsers((current) =>
+                  current.map((item) => (item.id === user.id ? refreshed.user || payload.user : item)),
+                )
 
-                return `Monnify ${String(type).toUpperCase()} verification completed.`
+                return buildVerificationToast(payload, type)
               })
             }
           />
@@ -2402,6 +2607,207 @@ function SettlementQueueCard({
   )
 }
 
+function KycUpgradesView({
+  submissions,
+  pagination,
+  filters,
+  selectedSubmission,
+  busyAction,
+  onFilterChange,
+  onSearch,
+  onPageChange,
+  onSelectSubmission,
+  onApproveSubmission,
+  onRejectSubmission,
+}) {
+  return (
+    <section className="settlements-stack">
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">KYC Upgrade Reviews</p>
+          <h2>Tier Upgrade Submissions</h2>
+        </div>
+        <span>{pagination.total} records</span>
+      </div>
+
+      <section className="queue-panel">
+        <div className="panel-toolbar report-toolbar">
+          <div className="topbar-actions">
+            <select
+              value={filters.status || "all"}
+              onChange={(event) => onFilterChange("status", event.target.value)}
+              title="Status"
+            >
+              {kycUpgradeStatusOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <button type="button" className="button primary" onClick={onSearch}>
+              <Search size={17} />
+              Filter
+            </button>
+          </div>
+        </div>
+
+        <div className="queue-layout">
+          <div className="queue-table-panel">
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Submitted</th>
+                    <th>Creator</th>
+                    <th>Current Tier</th>
+                    <th>Target Tier</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {submissions.length ? (
+                    submissions.map((submission) => (
+                      <tr
+                        key={submission.id}
+                        className={
+                          String(selectedSubmission?.id || "") === String(submission.id)
+                            ? "clickable selected"
+                            : "clickable"
+                        }
+                        onClick={() => onSelectSubmission(submission)}
+                      >
+                        <td>{formatDate(submission.submittedAt || submission.createdAt)}</td>
+                        <td>{submission.creatorEmail || submission.creator?.email || "Not available"}</td>
+                        <td>Tier {submission.currentTier || 1}</td>
+                        <td>Tier {submission.targetTier || 2}</td>
+                        <td>
+                          <StatusPill status={submission.status || "awaiting_review"} />
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan="5" className="empty-cell">
+                        No KYC upgrade submissions found
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <PaginationControls pagination={pagination} onPageChange={onPageChange} />
+          </div>
+
+          {selectedSubmission ? (
+            <KycUpgradeDetailCard
+              submission={selectedSubmission}
+              approving={busyAction === `approve-kyc-upgrade-${selectedSubmission.id}`}
+              rejecting={busyAction === `reject-kyc-upgrade-${selectedSubmission.id}`}
+              onApprove={onApproveSubmission}
+              onReject={onRejectSubmission}
+            />
+          ) : (
+            <EmptyState icon={ShieldCheck} title="Select a KYC upgrade submission" compact />
+          )}
+        </div>
+      </section>
+    </section>
+  )
+}
+
+function KycUpgradeDetailCard({ submission, approving, rejecting, onApprove, onReject }) {
+  const livenessEvidenceDocsRaw = Array.isArray(submission.selfieEvidenceImageUrls)
+    ? submission.selfieEvidenceImageUrls
+    : Array.isArray(submission.selfieEvidenceDataUrls)
+      ? submission.selfieEvidenceDataUrls
+      : []
+  const livenessEvidenceDocs = livenessEvidenceDocsRaw
+    .filter((item) => typeof item === "string" && item.trim())
+    .slice(0, 4)
+
+  const docs = [
+    ["Government ID uploaded", submission.governmentIdImageUrl],
+    ["Selfie uploaded", submission.selfieImageUrl],
+    ...livenessEvidenceDocs.map((url, index) => [`Liveness capture ${index + 1}`, url]),
+  ]
+
+  return (
+    <article className="work-card">
+      <div className="card-head">
+        <div>
+          <p className="eyebrow">{submission.creatorEmail || submission.creator?.email || "Creator"}</p>
+          <h2>
+            Tier {submission.currentTier || 1} to Tier {submission.targetTier || 2}
+          </h2>
+        </div>
+        <StatusPill status={submission.status || "awaiting_review"} />
+      </div>
+
+      <div className="detail-grid">
+        <Detail label="Submitted" value={formatDate(submission.submittedAt || submission.createdAt)} />
+        <Detail label="Reviewed" value={formatDate(submission.reviewedAt)} />
+        <Detail label="Support Note" value={submission.supportNote || "No note"} wide />
+        <Detail label="Rejection Reason" value={submission.rejectionReason || "None"} wide />
+        <Detail
+          label="Tier 3/4 Confirmation"
+          value={submission.transactionHistoryConfirmed ? "Transaction history confirmed" : "Not confirmed"}
+          wide
+        />
+        <Detail
+          label="Tier 4 Address Proof"
+          value={submission.addressVerificationProvided ? "Provided" : "Not provided"}
+        />
+        <Detail
+          label="Tier 4 Creator/Business"
+          value={submission.creatorBusinessVerificationProvided ? "Provided" : "Not provided"}
+        />
+        <Detail
+          label="Tier 4 Due Diligence"
+          value={submission.enhancedDueDiligenceAccepted ? "Accepted" : "Not accepted"}
+        />
+      </div>
+
+      <div className="detail-section">
+        <div className="section-heading compact-heading">
+          <div>
+            <p className="eyebrow">Submitted Documents</p>
+            <h2>Government ID, Selfie, and Liveness Captures ({docs.filter(([, url]) => Boolean(url)).length})</h2>
+          </div>
+        </div>
+        {docs.map(([label, url]) => (
+          <div key={label} className="detail">
+            <span>{label}</span>
+            {url ? (
+              <div className="action-row split">
+                <a className="button ghost" href={url} target="_blank" rel="noreferrer">
+                  <FileText size={17} />
+                  Open Document
+                </a>
+              </div>
+            ) : (
+              <strong>Not uploaded</strong>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {submission.status === "awaiting_review" ? (
+        <div className="action-row split">
+          <button type="button" className="button success" onClick={() => onApprove(submission)} disabled={approving}>
+            <Check size={17} />
+            Approve Upgrade
+          </button>
+          <button type="button" className="button danger" onClick={() => onReject(submission)} disabled={rejecting}>
+            <X size={17} />
+            Reject Upgrade
+          </button>
+        </div>
+      ) : null}
+    </article>
+  )
+}
+
 function ChangeRequestsView({
   requests,
   busyAction,
@@ -2508,6 +2914,18 @@ function UsersView({
   onRequeryPaystack,
   onVerifyIdentity,
 }) {
+  const [identityVisibility, setIdentityVisibility] = useState({})
+
+  const toggleIdentityVisibility = (userId, type) => {
+    setIdentityVisibility((current) => ({
+      ...current,
+      [userId]: {
+        bvn: type === "bvn" ? !current[userId]?.bvn : Boolean(current[userId]?.bvn),
+        nin: type === "nin" ? !current[userId]?.nin : Boolean(current[userId]?.nin),
+      },
+    }))
+  }
+
   return (
     <section className="users-panel">
       <div className="panel-toolbar users-toolbar">
@@ -2538,6 +2956,7 @@ function UsersView({
                   <th>Last Name</th>
                   <th>Email</th>
                   <th>Date Registered</th>
+                  <th>Identity</th>
                 </tr>
               </thead>
               <tbody>
@@ -2552,11 +2971,51 @@ function UsersView({
                       <td>{getLastName(user) || "Not available"}</td>
                       <td>{user.email}</td>
                       <td>{formatDate(user.createdAt)}</td>
+                      <td>
+                        <div className="identity-actions">
+                          <button
+                            type="button"
+                            className="button ghost compact"
+                            disabled={!user.identity?.hasBvn && !resolveIdentityNumber(user, "bvn")}
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              toggleIdentityVisibility(user.id, "bvn")
+                            }}
+                          >
+                            {identityVisibility[user.id]?.bvn ? "Hide BVN" : "View BVN"}
+                          </button>
+                          <button
+                            type="button"
+                            className="button ghost compact"
+                            disabled={!user.identity?.hasNin && !resolveIdentityNumber(user, "nin")}
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              toggleIdentityVisibility(user.id, "nin")
+                            }}
+                          >
+                            {identityVisibility[user.id]?.nin ? "Hide NIN" : "View NIN"}
+                          </button>
+                          <div className="identity-values">
+                            <span>
+                              BVN:{" "}
+                              {identityVisibility[user.id]?.bvn
+                                ? resolveIdentityNumber(user, "bvn") || "Not submitted"
+                                : maskIdentityNumber(resolveIdentityNumber(user, "bvn"))}
+                            </span>
+                            <span>
+                              NIN:{" "}
+                              {identityVisibility[user.id]?.nin
+                                ? resolveIdentityNumber(user, "nin") || "Not submitted"
+                                : maskIdentityNumber(resolveIdentityNumber(user, "nin"))}
+                            </span>
+                          </div>
+                        </div>
+                      </td>
                     </tr>
                   ))
                 ) : (
                   <tr>
-                    <td colSpan="4" className="empty-cell">
+                    <td colSpan="5" className="empty-cell">
                       No user records found
                     </td>
                   </tr>
@@ -2599,6 +3058,8 @@ function UserDetailPanel({ user, details, edit, busyAction, onEditChange, onSave
   const payouts = Array.isArray(details?.payouts) ? details.payouts : []
   const donations = Array.isArray(details?.donations) ? details.donations : []
   const changeRequests = Array.isArray(details?.changeRequests) ? details.changeRequests : []
+  const wallet = user.wallet || {}
+  const balance = details?.balance || {}
 
   return (
     <section className="user-detail">
@@ -2656,6 +3117,7 @@ function UserDetailPanel({ user, details, edit, busyAction, onEditChange, onSave
             <option value="1">Tier 1</option>
             <option value="2">Tier 2</option>
             <option value="3">Tier 3</option>
+            <option value="4">Tier 4</option>
           </select>
         </label>
         <label>
@@ -2757,6 +3219,25 @@ function UserDetailPanel({ user, details, edit, busyAction, onEditChange, onSave
 
       <div className="ops-grid">
         <InfoBlock
+          icon={CircleDollarSign}
+          title="Wallet Snapshot"
+          rows={[
+            `Available: ${formatCurrency(wallet.availableBalance || 0)}`,
+            `Pending Review: ${formatCurrency(wallet.pendingBalance || 0)}`,
+            `Total Received: ${formatCurrency(wallet.totalReceived || 0)}`,
+          ]}
+        />
+        <InfoBlock
+          icon={Banknote}
+          title="Ledger Balance"
+          rows={[
+            `Creator Revenue: ${formatCurrency(balance.creatorRevenue || 0)}`,
+            `Paid Out: ${formatCurrency(balance.totalPaidOut || 0)}`,
+            `Withdrawable Now: ${formatCurrency(balance.creatorAvailableBalance || 0)}`,
+            `Pending Review: ${formatCurrency(balance.pendingCreatorRevenue || 0)}`,
+          ]}
+        />
+        <InfoBlock
           icon={Banknote}
           title="Payout Profile"
           rows={[
@@ -2771,6 +3252,8 @@ function UserDetailPanel({ user, details, edit, busyAction, onEditChange, onSave
           rows={[
             user.identity?.hasBvn ? "BVN saved" : "No BVN",
             user.identity?.hasNin ? "NIN saved" : "No NIN",
+            `Submitted BVN: ${resolveIdentityNumber(user, "bvn") || "Not submitted"}`,
+            `Submitted NIN: ${resolveIdentityNumber(user, "nin") || "Not submitted"}`,
             `BVN: ${identityVerificationLabel(user.identityVerification?.bvn?.status)}`,
             `NIN: ${identityVerificationLabel(user.identityVerification?.nin?.status)}`,
             `DOB: ${user.identity?.hasDateOfBirth ? String(user.identity?.dateOfBirth || "").slice(0, 10) : "Missing"}`,
