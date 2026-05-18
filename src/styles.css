@@ -404,6 +404,24 @@ h2 {
   padding: 5px 10px;
 }
 
+.heading-meta-stack {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.provider-indicator {
+  border-radius: 999px;
+  border: 1px solid #1f3a8a;
+  background: #0f172a;
+  color: #bfdbfe;
+  font-size: 0.76rem;
+  font-weight: 900;
+  padding: 5px 10px;
+}
+
 .compact-heading {
   margin-bottom: 10px;
 }

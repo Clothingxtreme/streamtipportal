@@ -168,6 +168,18 @@ function normalizePagination(pagination, fallbackLimit) {
   }
 }
 
+function normalizePayoutProvider(value) {
+  const provider = String(value || "").toLowerCase().trim()
+  return provider === "paystack" ? "paystack" : provider === "monnify" ? "monnify" : "unknown"
+}
+
+function formatPayoutProviderLabel(value) {
+  const provider = normalizePayoutProvider(value)
+  if (provider === "paystack") return "Paystack"
+  if (provider === "monnify") return "Monnify"
+  return "Unknown"
+}
+
 function buildSettlementParams(filters, includePagination = true) {
   const params = new URLSearchParams()
 
@@ -413,6 +425,7 @@ function App() {
     page: 1,
     limit: SETTLEMENT_PAGE_SIZE,
   })
+  const [settlementTransferProvider, setSettlementTransferProvider] = useState("unknown")
   const [donations, setDonations] = useState([])
   const [donationsPagination, setDonationsPagination] = useState(() =>
     normalizePagination(null, DONATION_PAGE_SIZE),
@@ -505,6 +518,7 @@ function App() {
       const payload = await request(`/portal/settlements?${buildSettlementParams(nextFilters)}`)
 
       setSettlements(Array.isArray(payload?.payouts) ? payload.payouts : [])
+      setSettlementTransferProvider(normalizePayoutProvider(payload?.payoutTransferProvider))
       setSettlementQueuePagination(
         normalizePagination(payload?.pagination, nextFilters.limit || SETTLEMENT_PAGE_SIZE),
       )
@@ -523,6 +537,9 @@ function App() {
       const payload = await request(`/portal/settlements/history?${buildSettlementParams(nextFilters)}`)
 
       setSettlementHistory(Array.isArray(payload?.payouts) ? payload.payouts : [])
+      if (payload?.payoutTransferProvider) {
+        setSettlementTransferProvider(normalizePayoutProvider(payload?.payoutTransferProvider))
+      }
       setSettlementHistoryPagination(
         normalizePagination(payload?.pagination, nextFilters.limit || SETTLEMENT_PAGE_SIZE),
       )
@@ -633,11 +650,15 @@ function App() {
       ])
 
       setSettlements(Array.isArray(settlementsPayload?.payouts) ? settlementsPayload.payouts : [])
+      setSettlementTransferProvider(normalizePayoutProvider(settlementsPayload?.payoutTransferProvider))
       setSettlementQueuePagination(
         normalizePagination(settlementsPayload?.pagination, settlementQueueFilters.limit || SETTLEMENT_PAGE_SIZE),
       )
       setChangeRequests(Array.isArray(changesPayload?.requests) ? changesPayload.requests : [])
       setSettlementHistory(Array.isArray(historyPayload?.payouts) ? historyPayload.payouts : [])
+      if (!settlementsPayload?.payoutTransferProvider && historyPayload?.payoutTransferProvider) {
+        setSettlementTransferProvider(normalizePayoutProvider(historyPayload?.payoutTransferProvider))
+      }
       setSettlementHistoryPagination(
         normalizePagination(historyPayload?.pagination, settlementFilters.limit || SETTLEMENT_PAGE_SIZE),
       )
@@ -1167,6 +1188,7 @@ function App() {
             payouts={settlements}
             queuePagination={settlementQueuePagination}
             queueFilters={settlementQueueFilters}
+            settlementTransferProvider={settlementTransferProvider}
             selectedPayout={selectedSettlement}
             history={settlementHistory}
             historyPagination={settlementHistoryPagination}
@@ -1646,6 +1668,7 @@ function SettlementsView({
   payouts,
   queuePagination,
   queueFilters,
+  settlementTransferProvider,
   selectedPayout,
   history,
   historyPagination,
@@ -1677,7 +1700,12 @@ function SettlementsView({
           <p className="eyebrow">Settlement Queue</p>
           <h2>Withdrawals Waiting For Action</h2>
         </div>
-        <span>{queuePagination.total} open</span>
+        <div className="heading-meta-stack">
+          <span>{queuePagination.total} open</span>
+          <span className="provider-indicator">
+            Provider: {formatPayoutProviderLabel(settlementTransferProvider)}
+          </span>
+        </div>
       </div>
 
       <section className="queue-panel">
@@ -1711,6 +1739,7 @@ function SettlementsView({
                     <th>Amount</th>
                     <th>Bank</th>
                     <th>Status</th>
+                    <th>Provider</th>
                     <th>Transfer Ref</th>
                     <th>Action</th>
                   </tr>
@@ -1743,6 +1772,7 @@ function SettlementsView({
                             }
                           />
                         </td>
+                        <td>{formatPayoutProviderLabel(payout.provider || settlementTransferProvider)}</td>
                         <td>{payout.transferReference || "Not sent"}</td>
                         <td>
                           {payout.canCancelAndReturn ? (
@@ -1766,7 +1796,7 @@ function SettlementsView({
                     ))
                   ) : (
                     <tr>
-                      <td colSpan="8" className="empty-cell">
+                      <td colSpan="9" className="empty-cell">
                         No settlement waiting for review
                       </td>
                     </tr>
@@ -1861,6 +1891,7 @@ function SettlementsView({
                 <th>Amount</th>
                 <th>Status</th>
                 <th>Review</th>
+                <th>Provider</th>
                 <th>Transfer Ref</th>
                 <th>Reviewed</th>
                 <th>Action</th>
@@ -1880,6 +1911,7 @@ function SettlementsView({
                     <td>
                       <StatusPill status={payout.reviewStatus || "not_required"} />
                     </td>
+                    <td>{formatPayoutProviderLabel(payout.provider || settlementTransferProvider)}</td>
                     <td>{payout.transferReference || "Not sent"}</td>
                     <td>{formatDate(payout.reviewedAt || payout.completedAt)}</td>
                     <td>
@@ -1901,7 +1933,7 @@ function SettlementsView({
                 ))
               ) : (
                 <tr>
-                  <td colSpan="9" className="empty-cell">
+                  <td colSpan="10" className="empty-cell">
                     No settlement history found
                   </td>
                 </tr>
