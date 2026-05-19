@@ -518,7 +518,9 @@ function App() {
       const payload = await request(`/portal/settlements?${buildSettlementParams(nextFilters)}`)
 
       setSettlements(Array.isArray(payload?.payouts) ? payload.payouts : [])
-      setSettlementTransferProvider(normalizePayoutProvider(payload?.payoutTransferProvider))
+      setSettlementTransferProvider(
+        normalizePayoutProvider(payload?.creatorWithdrawalProvider || payload?.payoutTransferProvider),
+      )
       setSettlementQueuePagination(
         normalizePagination(payload?.pagination, nextFilters.limit || SETTLEMENT_PAGE_SIZE),
       )
@@ -537,8 +539,10 @@ function App() {
       const payload = await request(`/portal/settlements/history?${buildSettlementParams(nextFilters)}`)
 
       setSettlementHistory(Array.isArray(payload?.payouts) ? payload.payouts : [])
-      if (payload?.payoutTransferProvider) {
-        setSettlementTransferProvider(normalizePayoutProvider(payload?.payoutTransferProvider))
+      if (payload?.creatorWithdrawalProvider || payload?.payoutTransferProvider) {
+        setSettlementTransferProvider(
+          normalizePayoutProvider(payload?.creatorWithdrawalProvider || payload?.payoutTransferProvider),
+        )
       }
       setSettlementHistoryPagination(
         normalizePagination(payload?.pagination, nextFilters.limit || SETTLEMENT_PAGE_SIZE),
@@ -650,14 +654,26 @@ function App() {
       ])
 
       setSettlements(Array.isArray(settlementsPayload?.payouts) ? settlementsPayload.payouts : [])
-      setSettlementTransferProvider(normalizePayoutProvider(settlementsPayload?.payoutTransferProvider))
+      setSettlementTransferProvider(
+        normalizePayoutProvider(
+          settlementsPayload?.creatorWithdrawalProvider || settlementsPayload?.payoutTransferProvider,
+        ),
+      )
       setSettlementQueuePagination(
         normalizePagination(settlementsPayload?.pagination, settlementQueueFilters.limit || SETTLEMENT_PAGE_SIZE),
       )
       setChangeRequests(Array.isArray(changesPayload?.requests) ? changesPayload.requests : [])
       setSettlementHistory(Array.isArray(historyPayload?.payouts) ? historyPayload.payouts : [])
-      if (!settlementsPayload?.payoutTransferProvider && historyPayload?.payoutTransferProvider) {
-        setSettlementTransferProvider(normalizePayoutProvider(historyPayload?.payoutTransferProvider))
+      if (
+        !settlementsPayload?.creatorWithdrawalProvider &&
+        !settlementsPayload?.payoutTransferProvider &&
+        (historyPayload?.creatorWithdrawalProvider || historyPayload?.payoutTransferProvider)
+      ) {
+        setSettlementTransferProvider(
+          normalizePayoutProvider(
+            historyPayload?.creatorWithdrawalProvider || historyPayload?.payoutTransferProvider,
+          ),
+        )
       }
       setSettlementHistoryPagination(
         normalizePagination(historyPayload?.pagination, settlementFilters.limit || SETTLEMENT_PAGE_SIZE),
