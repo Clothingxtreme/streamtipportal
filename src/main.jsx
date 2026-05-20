@@ -27,6 +27,7 @@ import {
 import "./styles.css"
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "http://localhost:5000").replace(/\/$/, "")
+const PAYSTACK_ENABLED = String(import.meta.env.VITE_PAYSTACK_ENABLED || "false").toLowerCase() === "true"
 const TOKEN_KEY = "streamtip.portal.session"
 const SETTLEMENT_PAGE_SIZE = 20
 const USER_PAGE_SIZE = 25
@@ -3324,7 +3325,7 @@ function UserDetailPanel({ user, details, edit, busyAction, onEditChange, onSave
           <UserCog size={17} />
           Save User
         </button>
-        {user.virtualAccount?.provider === "paystack" ? (
+        {PAYSTACK_ENABLED && user.virtualAccount?.provider === "paystack" ? (
           <button
             type="button"
             className="button primary"
