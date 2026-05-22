@@ -316,6 +316,9 @@ function buildDonationReceiptText(donation) {
     `Payment Reference: ${donation.monnifyPaymentReference || donation.paystackReference || "Not available"}`,
     `Paystack Transaction ID: ${donation.paystackTransactionId || "Not available"}`,
     `Wallet Status: ${donation.walletStatus || "available"}`,
+    `Settlement Status: ${donation.settlementStatus || "pending"}`,
+    `Creator Settled Amount: ${formatCurrency(donation.creatorSettledAmount || 0)}`,
+    `Settlement Pending Amount: ${formatCurrency(donation.settlementPendingAmount || 0)}`,
     `Risk Reason: ${donation.riskReason || "None"}`,
     `Payment Method: ${donation.paymentMethod || "Not available"}`,
     `Purpose: Gift/donation to a StreamTip creator through a dedicated virtual account.`,
@@ -501,7 +504,9 @@ function App() {
       const payload = await response.json().catch(() => null)
 
       if (!response.ok) {
-        throw new Error(payload?.error || payload?.message || "Portal request failed.")
+        const error = new Error(payload?.error || payload?.message || "Portal request failed.")
+        error.status = response.status
+        throw error
       }
 
       return payload
@@ -721,15 +726,23 @@ function App() {
         return
       }
 
+      const tokenSnapshot = token
+
       try {
         const payload = await request("/admin/auth/me")
         if (!mounted) return
         setAdmin(payload.admin || null)
         setAuthChecked(true)
-      } catch {
+      } catch (error) {
         if (!mounted) return
-        window.localStorage.removeItem(TOKEN_KEY)
-        setToken("")
+        const status = Number(error?.status || 0)
+        const latestToken = window.localStorage.getItem(TOKEN_KEY) || ""
+        const isSameRequestToken = latestToken && latestToken === tokenSnapshot
+
+        if ((status === 401 || status === 403) && isSameRequestToken) {
+          window.localStorage.removeItem(TOKEN_KEY)
+          setToken("")
+        }
         setAdmin(null)
         setAuthChecked(true)
       }
@@ -1331,7 +1344,7 @@ function App() {
                 setDonations((current) =>
                   current.map((item) => (item.id === donation.id ? payload.donation : item)),
                 )
-                return "Gift released to available wallet balance."
+                return "Risk review approved. Final available earnings still depend on confirmed settlement."
               })
             }
             onRejectReview={(donation) =>
@@ -2155,7 +2168,7 @@ function DonationDetailCard({
       ) : null}
       {isPendingReview ? (
         <p className="notice warning">
-          This gift is held in pending balance. Review the risk flags before releasing it to the creator wallet.
+          This gift is held for risk/compliance review. Settlement confirmation still controls available earnings.
         </p>
       ) : null}
 
@@ -2164,6 +2177,9 @@ function DonationDetailCard({
         <Detail label="Provider Paid" value={formatDate(donation.paidOn)} />
         <Detail label="Provider" value={provider} />
         <Detail label="Wallet Status" value={donation.walletStatus || "available"} />
+        <Detail label="Settlement Status" value={donation.settlementStatus || "pending"} />
+        <Detail label="Settled (Creator)" value={formatCurrency(donation.creatorSettledAmount || 0)} />
+        <Detail label="Pending Settlement" value={formatCurrency(donation.settlementPendingAmount || 0)} />
         <Detail label="Streamer" value={donation.creator?.name || donation.creatorEmail || "Unknown"} />
         <Detail label="Destination VA" value={`${donation.destinationAccountNumber || "No account"} - ${donation.destinationBankName || "No bank"}`} />
         <Detail label="Source Name" value={donation.sourceAccountName || "Not synced"} />
@@ -3272,7 +3288,7 @@ function UserDetailPanel({ user, details, edit, busyAction, onEditChange, onSave
           title="Wallet Snapshot"
           rows={[
             `Available: ${formatCurrency(wallet.availableBalance || 0)}`,
-            `Pending Review: ${formatCurrency(wallet.pendingBalance || 0)}`,
+            `Pending Earnings: ${formatCurrency(wallet.pendingBalance || 0)}`,
             `Total Received: ${formatCurrency(wallet.totalReceived || 0)}`,
           ]}
         />
@@ -3283,7 +3299,7 @@ function UserDetailPanel({ user, details, edit, busyAction, onEditChange, onSave
             `Creator Revenue: ${formatCurrency(balance.creatorRevenue || 0)}`,
             `Paid Out: ${formatCurrency(balance.totalPaidOut || 0)}`,
             `Withdrawable Now: ${formatCurrency(balance.creatorAvailableBalance || 0)}`,
-            `Pending Review: ${formatCurrency(balance.pendingCreatorRevenue || 0)}`,
+            `Pending Earnings: ${formatCurrency(balance.pendingCreatorRevenue || 0)}`,
           ]}
         />
         <InfoBlock
