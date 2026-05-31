@@ -26,7 +26,32 @@ import {
 } from "lucide-react"
 import "./styles.css"
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "http://localhost:5000").replace(/\/$/, "")
+const LOCAL_API_URL = "http://localhost:5000"
+
+function resolvePortalApiBaseUrl() {
+  const configuredUrl = String(import.meta.env.VITE_API_BASE_URL || "").trim()
+  if (configuredUrl) {
+    return configuredUrl.replace(/\/$/, "")
+  }
+
+  if (typeof window !== "undefined") {
+    const hostname = String(window.location.hostname || "").toLowerCase()
+    const isLocalHost =
+      hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1"
+
+    if (isLocalHost) {
+      return LOCAL_API_URL
+    }
+
+    if (hostname === "streamtips.live" || hostname.endsWith(".streamtips.live")) {
+      return "https://api.streamtips.live"
+    }
+  }
+
+  return LOCAL_API_URL
+}
+
+const API_BASE_URL = resolvePortalApiBaseUrl()
 const PAYSTACK_ENABLED = String(import.meta.env.VITE_PAYSTACK_ENABLED || "false").toLowerCase() === "true"
 const TOKEN_KEY = "streamtip.portal.session"
 const SETTLEMENT_PAGE_SIZE = 20
@@ -172,6 +197,11 @@ function normalizePagination(pagination, fallbackLimit) {
 function normalizePayoutProvider(value) {
   const provider = String(value || "").toLowerCase().trim()
   return provider === "paystack" ? "paystack" : provider === "monnify" ? "monnify" : "unknown"
+}
+
+function appendAdminTokenToPath(path, token) {
+  const separator = String(path || "").includes("?") ? "&" : "?"
+  return `${path}${separator}adminToken=${encodeURIComponent(token)}`
 }
 
 function formatPayoutProviderLabel(value) {
@@ -485,22 +515,43 @@ function App() {
   const [cooldowns, setCooldowns] = useState({})
   const [userEdits, setUserEdits] = useState({})
 
+  const requestRaw = useCallback(
+    async (path, options = {}) => {
+      const method = String(options.method || "GET").toUpperCase()
+      const createRequest = (requestPath, includeAdminHeader = true) => {
+        const headers = new Headers(options.headers || {})
+
+        if (options.body && !headers.has("Content-Type")) {
+          headers.set("Content-Type", "application/json")
+        }
+
+        if (includeAdminHeader && token) {
+          headers.set("x-admin-token", token)
+        }
+
+        return fetch(`${API_BASE_URL}${requestPath}`, {
+          ...options,
+          method,
+          headers,
+        })
+      }
+
+      try {
+        return await createRequest(path, true)
+      } catch (error) {
+        if (!token) {
+          throw error
+        }
+
+        return createRequest(appendAdminTokenToPath(path, token), false)
+      }
+    },
+    [token],
+  )
+
   const request = useCallback(
     async (path, options = {}) => {
-      const headers = new Headers(options.headers || {})
-
-      if (options.body && !headers.has("Content-Type")) {
-        headers.set("Content-Type", "application/json")
-      }
-
-      if (token) {
-        headers.set("x-admin-token", token)
-      }
-
-      const response = await fetch(`${API_BASE_URL}${path}`, {
-        ...options,
-        headers,
-      })
+      const response = await requestRaw(path, options)
       const payload = await response.json().catch(() => null)
 
       if (!response.ok) {
@@ -511,7 +562,28 @@ function App() {
 
       return payload
     },
-    [token],
+    [requestRaw],
+  )
+
+  const requestFile = useCallback(
+    async (path, options = {}) => {
+      const headers = new Headers(options.headers || {})
+
+      const response = await requestRaw(path, {
+        ...options,
+        headers,
+      })
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null)
+        const error = new Error(payload?.error || payload?.message || "Portal request failed.")
+        error.status = response.status
+        throw error
+      }
+
+      return response
+    },
+    [requestRaw],
   )
 
   const loadSettlementQueue = useCallback(
@@ -923,11 +995,8 @@ function App() {
     setToast(null)
 
     try {
-      const response = await fetch(
-        `${API_BASE_URL}/portal/settlements/report?${buildSettlementParams(settlementFilters, false)}`,
-        {
-          headers: token ? { "x-admin-token": token } : {},
-        },
+      const response = await requestFile(
+        `/portal/settlements/report?${buildSettlementParams(settlementFilters, false)}`,
       )
 
       if (!response.ok) {
@@ -962,11 +1031,8 @@ function App() {
     setToast(null)
 
     try {
-      const response = await fetch(
-        `${API_BASE_URL}/portal/donations/report?${buildDonationParams(donationFilters, false)}`,
-        {
-          headers: token ? { "x-admin-token": token } : {},
-        },
+      const response = await requestFile(
+        `/portal/donations/report?${buildDonationParams(donationFilters, false)}`,
       )
 
       if (!response.ok) {
@@ -1001,11 +1067,8 @@ function App() {
     setToast(null)
 
     try {
-      const response = await fetch(
-        `${API_BASE_URL}/portal/compliance-inflows/report?${buildComplianceParams(complianceFilters, false)}`,
-        {
-          headers: token ? { "x-admin-token": token } : {},
-        },
+      const response = await requestFile(
+        `/portal/compliance-inflows/report?${buildComplianceParams(complianceFilters, false)}`,
       )
 
       if (!response.ok) {
