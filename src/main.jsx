@@ -59,6 +59,7 @@ const USER_PAGE_SIZE = 25
 const DONATION_PAGE_SIZE = 25
 const COMPLIANCE_PAGE_SIZE = 25
 const KYC_UPGRADE_PAGE_SIZE = 25
+const DEFAULT_REQUEST_TIMEOUT_MS = 20_000
 
 const DEFAULT_PAGINATION = {
   page: 1,
@@ -517,11 +518,12 @@ function App() {
 
   const requestRaw = useCallback(
     async (path, options = {}) => {
-      const method = String(options.method || "GET").toUpperCase()
+      const { timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, ...requestOptions } = options || {}
+      const method = String(requestOptions.method || "GET").toUpperCase()
       const createRequest = (requestPath, includeAdminHeader = true) => {
-        const headers = new Headers(options.headers || {})
+        const headers = new Headers(requestOptions.headers || {})
 
-        if (options.body && !headers.has("Content-Type")) {
+        if (requestOptions.body && !headers.has("Content-Type")) {
           headers.set("Content-Type", "application/json")
         }
 
@@ -529,17 +531,29 @@ function App() {
           headers.set("x-admin-token", token)
         }
 
-        return fetch(`${API_BASE_URL}${requestPath}`, {
-          ...options,
+        const fetchPromise = fetch(`${API_BASE_URL}${requestPath}`, {
+          ...requestOptions,
           method,
           headers,
         })
+        const timeout = Number(timeoutMs)
+
+        if (!Number.isFinite(timeout) || timeout <= 0) {
+          return fetchPromise
+        }
+
+        return Promise.race([
+          fetchPromise,
+          new Promise((_, reject) => {
+            window.setTimeout(() => reject(new Error("Portal request timed out.")), timeout)
+          }),
+        ])
       }
 
       try {
         return await createRequest(path, true)
       } catch (error) {
-        if (!token) {
+        if (!token || method !== "GET") {
           throw error
         }
 
@@ -702,91 +716,205 @@ function App() {
     [request, userSearch, usersPagination.limit, usersPagination.page],
   )
 
-  const refreshAll = useCallback(async () => {
-    if (!token) return
+  const refreshAll = useCallback(
+    async (options = {}) => {
+      const { scope = "all", showLoading = true, silent = false } = options
+      if (!token) return
 
-    setLoading(true)
-    try {
-      const [
-        settlementsPayload,
-        changesPayload,
-        historyPayload,
-        donationsPayload,
-        compliancePayload,
-        kycUpgradesPayload,
-        usersPayload,
-      ] = await Promise.all([
-        request(`/portal/settlements?${buildSettlementParams(settlementQueueFilters)}`),
-        request("/portal/payout-profile-change-requests"),
-        request(`/portal/settlements/history?${buildSettlementParams(settlementFilters)}`),
-        request(`/portal/donations?${buildDonationParams(donationFilters)}`),
-        request(`/portal/compliance-inflows?${buildComplianceParams(complianceFilters)}`),
-        request(`/portal/kyc-upgrade-submissions?${buildKycUpgradeParams(kycUpgradeFilters)}`),
-        request(
-          `/portal/users?${buildUserParams({
-            search: userSearch,
-            page: usersPagination.page,
-            limit: usersPagination.limit,
-          })}`,
-        ),
-      ])
+      const quickFirstPaint = scope === "initial"
+      const timeoutMs = quickFirstPaint ? 5_000 : DEFAULT_REQUEST_TIMEOUT_MS
 
-      setSettlements(Array.isArray(settlementsPayload?.payouts) ? settlementsPayload.payouts : [])
-      setSettlementTransferProvider(
-        normalizePayoutProvider(
-          settlementsPayload?.creatorWithdrawalProvider || settlementsPayload?.payoutTransferProvider,
-        ),
-      )
-      setSettlementQueuePagination(
-        normalizePagination(settlementsPayload?.pagination, settlementQueueFilters.limit || SETTLEMENT_PAGE_SIZE),
-      )
-      setChangeRequests(Array.isArray(changesPayload?.requests) ? changesPayload.requests : [])
-      setSettlementHistory(Array.isArray(historyPayload?.payouts) ? historyPayload.payouts : [])
-      if (
-        !settlementsPayload?.creatorWithdrawalProvider &&
-        !settlementsPayload?.payoutTransferProvider &&
-        (historyPayload?.creatorWithdrawalProvider || historyPayload?.payoutTransferProvider)
-      ) {
-        setSettlementTransferProvider(
-          normalizePayoutProvider(
-            historyPayload?.creatorWithdrawalProvider || historyPayload?.payoutTransferProvider,
-          ),
-        )
+      if (showLoading) {
+        setLoading(true)
       }
-      setSettlementHistoryPagination(
-        normalizePagination(historyPayload?.pagination, settlementFilters.limit || SETTLEMENT_PAGE_SIZE),
-      )
-      setDonations(Array.isArray(donationsPayload?.donations) ? donationsPayload.donations : [])
-      setDonationsPagination(
-        normalizePagination(donationsPayload?.pagination, donationFilters.limit || DONATION_PAGE_SIZE),
-      )
-      setComplianceInflows(Array.isArray(compliancePayload?.inflows) ? compliancePayload.inflows : [])
-      setCompliancePagination(
-        normalizePagination(compliancePayload?.pagination, complianceFilters.limit || COMPLIANCE_PAGE_SIZE),
-      )
-      setKycUpgradeSubmissions(Array.isArray(kycUpgradesPayload?.submissions) ? kycUpgradesPayload.submissions : [])
-      setKycUpgradePagination(
-        normalizePagination(kycUpgradesPayload?.pagination, kycUpgradeFilters.limit || KYC_UPGRADE_PAGE_SIZE),
-      )
-      setUsers(Array.isArray(usersPayload?.users) ? usersPayload.users : [])
-      setUsersPagination(normalizePagination(usersPayload?.pagination, usersPagination.limit || USER_PAGE_SIZE))
-    } catch (error) {
-      setToast({ tone: "danger", message: error.message })
-    } finally {
-      setLoading(false)
-    }
-  }, [
-    request,
-    complianceFilters,
-    donationFilters,
-    kycUpgradeFilters,
-    settlementFilters,
-    settlementQueueFilters,
-    token,
-    userSearch,
-    usersPagination.limit,
-    usersPagination.page,
-  ])
+
+      const failedMessages = []
+      const settlementProviderRef = {
+        hasPrimary: false,
+      }
+
+      const tasks = [
+        {
+          key: "settlements",
+          enabled:
+            scope === "all" ||
+            quickFirstPaint ||
+            activeTab === "settlements",
+          run: () =>
+            request(`/portal/settlements?${buildSettlementParams(settlementQueueFilters)}`, {
+              timeoutMs,
+            }),
+          apply: (payload) => {
+            setSettlements(Array.isArray(payload?.payouts) ? payload.payouts : [])
+            setSettlementTransferProvider(
+              normalizePayoutProvider(
+                payload?.creatorWithdrawalProvider || payload?.payoutTransferProvider,
+              ),
+            )
+            settlementProviderRef.hasPrimary = Boolean(
+              payload?.creatorWithdrawalProvider || payload?.payoutTransferProvider,
+            )
+            setSettlementQueuePagination(
+              normalizePagination(
+                payload?.pagination,
+                settlementQueueFilters.limit || SETTLEMENT_PAGE_SIZE,
+              ),
+            )
+          },
+        },
+        {
+          key: "changes",
+          enabled: scope === "all" || activeTab === "changes",
+          run: () => request("/portal/payout-profile-change-requests", { timeoutMs }),
+          apply: (payload) => {
+            setChangeRequests(Array.isArray(payload?.requests) ? payload.requests : [])
+          },
+        },
+        {
+          key: "history",
+          enabled:
+            scope === "all" ||
+            quickFirstPaint ||
+            activeTab === "settlements",
+          run: () =>
+            request(`/portal/settlements/history?${buildSettlementParams(settlementFilters)}`, {
+              timeoutMs,
+            }),
+          apply: (payload) => {
+            setSettlementHistory(Array.isArray(payload?.payouts) ? payload.payouts : [])
+            if (
+              !settlementProviderRef.hasPrimary &&
+              (payload?.creatorWithdrawalProvider || payload?.payoutTransferProvider)
+            ) {
+              setSettlementTransferProvider(
+                normalizePayoutProvider(
+                  payload?.creatorWithdrawalProvider || payload?.payoutTransferProvider,
+                ),
+              )
+            }
+            setSettlementHistoryPagination(
+              normalizePagination(payload?.pagination, settlementFilters.limit || SETTLEMENT_PAGE_SIZE),
+            )
+          },
+        },
+        {
+          key: "donations",
+          enabled: scope === "all" || activeTab === "gifts",
+          run: () =>
+            request(`/portal/donations?${buildDonationParams(donationFilters)}`, {
+              timeoutMs,
+            }),
+          apply: (payload) => {
+            setDonations(Array.isArray(payload?.donations) ? payload.donations : [])
+            setDonationsPagination(
+              normalizePagination(payload?.pagination, donationFilters.limit || DONATION_PAGE_SIZE),
+            )
+          },
+        },
+        {
+          key: "compliance",
+          enabled: scope === "all" || activeTab === "compliance",
+          run: () =>
+            request(`/portal/compliance-inflows?${buildComplianceParams(complianceFilters)}`, {
+              timeoutMs,
+            }),
+          apply: (payload) => {
+            setComplianceInflows(Array.isArray(payload?.inflows) ? payload.inflows : [])
+            setCompliancePagination(
+              normalizePagination(payload?.pagination, complianceFilters.limit || COMPLIANCE_PAGE_SIZE),
+            )
+          },
+        },
+        {
+          key: "kyc",
+          enabled: scope === "all" || activeTab === "kyc-upgrades",
+          run: () =>
+            request(`/portal/kyc-upgrade-submissions?${buildKycUpgradeParams(kycUpgradeFilters)}`, {
+              timeoutMs,
+            }),
+          apply: (payload) => {
+            setKycUpgradeSubmissions(
+              Array.isArray(payload?.submissions) ? payload.submissions : [],
+            )
+            setKycUpgradePagination(
+              normalizePagination(
+                payload?.pagination,
+                kycUpgradeFilters.limit || KYC_UPGRADE_PAGE_SIZE,
+              ),
+            )
+          },
+        },
+        {
+          key: "users",
+          enabled:
+            scope === "all" ||
+            quickFirstPaint ||
+            activeTab === "users" ||
+            activeTab === "compliance",
+          run: () =>
+            request(
+              `/portal/users?${buildUserParams({
+                search: userSearch,
+                page: usersPagination.page,
+                limit: usersPagination.limit,
+              })}`,
+              { timeoutMs },
+            ),
+          apply: (payload) => {
+            setUsers(Array.isArray(payload?.users) ? payload.users : [])
+            setUsersPagination(
+              normalizePagination(payload?.pagination, usersPagination.limit || USER_PAGE_SIZE),
+            )
+          },
+        },
+      ].filter((task) => task.enabled)
+
+      try {
+        await Promise.all(
+          tasks.map(async (task) => {
+            try {
+              const payload = await task.run()
+              task.apply(payload)
+            } catch (error) {
+              failedMessages.push(error?.message || `${task.key} request failed.`)
+            }
+          }),
+        )
+
+        if (failedMessages.length && !silent) {
+          const firstMessage = String(failedMessages[0] || "Some portal data failed to load.")
+          setToast({
+            tone: "danger",
+            message:
+              failedMessages.length > 1
+                ? `${firstMessage} (${failedMessages.length} requests failed; showing partial data.)`
+                : firstMessage,
+          })
+        }
+      } catch (error) {
+        if (!silent) {
+          setToast({ tone: "danger", message: error.message })
+        }
+      } finally {
+        if (showLoading) {
+          setLoading(false)
+        }
+      }
+    },
+    [
+      activeTab,
+      request,
+      complianceFilters,
+      donationFilters,
+      kycUpgradeFilters,
+      settlementFilters,
+      settlementQueueFilters,
+      token,
+      userSearch,
+      usersPagination.limit,
+      usersPagination.page,
+    ],
+  )
 
   useEffect(() => {
     let mounted = true
@@ -829,9 +957,64 @@ function App() {
 
   useEffect(() => {
     if (admin) {
-      void refreshAll()
+      void refreshAll({ scope: "initial" })
+      window.setTimeout(() => {
+        void refreshAll({ scope: "all", showLoading: false, silent: true })
+      }, 120)
     }
   }, [admin])
+
+  useEffect(() => {
+    if (!admin) return
+
+    if (activeTab === "gifts" && donations.length === 0) {
+      void loadDonations({ page: donationFilters.page || 1 })
+      return
+    }
+
+    if (activeTab === "compliance" && complianceInflows.length === 0) {
+      void loadComplianceInflows({ page: complianceFilters.page || 1 })
+      if (users.length === 0) {
+        void loadUsers({ page: usersPagination.page || 1 })
+      }
+      return
+    }
+
+    if (activeTab === "kyc-upgrades" && kycUpgradeSubmissions.length === 0) {
+      void loadKycUpgradeSubmissions({ page: kycUpgradeFilters.page || 1 })
+      return
+    }
+
+    if (activeTab === "changes" && changeRequests.length === 0) {
+      void request("/portal/payout-profile-change-requests")
+        .then((payload) => {
+          setChangeRequests(Array.isArray(payload?.requests) ? payload.requests : [])
+        })
+        .catch(() => null)
+      return
+    }
+
+    if (activeTab === "users" && users.length === 0) {
+      void loadUsers({ page: usersPagination.page || 1 })
+    }
+  }, [
+    activeTab,
+    admin,
+    changeRequests.length,
+    complianceFilters.page,
+    complianceInflows.length,
+    donationFilters.page,
+    donations.length,
+    kycUpgradeFilters.page,
+    kycUpgradeSubmissions.length,
+    loadComplianceInflows,
+    loadDonations,
+    loadKycUpgradeSubmissions,
+    loadUsers,
+    request,
+    users.length,
+    usersPagination.page,
+  ])
 
   const selectedUser = useMemo(() => {
     return selectedUserDetails?.user || users.find((user) => String(user.id) === String(selectedUserId)) || null
@@ -997,6 +1180,7 @@ function App() {
     try {
       const response = await requestFile(
         `/portal/settlements/report?${buildSettlementParams(settlementFilters, false)}`,
+        { timeoutMs: 45_000 },
       )
 
       if (!response.ok) {
@@ -1033,6 +1217,7 @@ function App() {
     try {
       const response = await requestFile(
         `/portal/donations/report?${buildDonationParams(donationFilters, false)}`,
+        { timeoutMs: 45_000 },
       )
 
       if (!response.ok) {
@@ -1069,6 +1254,7 @@ function App() {
     try {
       const response = await requestFile(
         `/portal/compliance-inflows/report?${buildComplianceParams(complianceFilters, false)}`,
+        { timeoutMs: 45_000 },
       )
 
       if (!response.ok) {
