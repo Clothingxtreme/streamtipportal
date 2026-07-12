@@ -167,7 +167,7 @@ function formatSourceAccountNumber(value) {
 }
 
 function statusTone(status) {
-  if (["completed", "success", "approved", "available", "verified", "active"].includes(status)) return "success"
+  if (["completed", "success", "approved", "available", "verified", "active", "qualified"].includes(status)) return "success"
   if (
     [
       "awaiting_review",
@@ -323,6 +323,30 @@ function getFirstName(user) {
 
 function getLastName(user) {
   return user?.lastName || user?.identity?.lastName || ""
+}
+
+function getDisplayName(user) {
+  return [getFirstName(user), user?.middleName || user?.identity?.middleName, getLastName(user)]
+    .filter(Boolean)
+    .join(" ") || user?.name || user?.email || "Creator"
+}
+
+function getInitials(user) {
+  const displayName = getDisplayName(user)
+  return displayName
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join("") || "ST"
+}
+
+function getReferralSummary(user, details) {
+  return details?.referralSummary || user?.referralSummary || {}
+}
+
+function getSocialDestination(user) {
+  return user?.socialProfile?.liveUrl || user?.socialProfile?.profileUrl || ""
 }
 
 function buildDonationReceiptText(donation) {
@@ -3266,9 +3290,10 @@ function UsersView({
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>First Name</th>
-                  <th>Last Name</th>
+                  <th>Profile</th>
                   <th>Email</th>
+                  <th>Referral Code</th>
+                  <th>Referrals</th>
                   <th>Date Registered</th>
                   <th>Identity</th>
                 </tr>
@@ -3281,9 +3306,24 @@ function UsersView({
                       className={String(selectedUser?.id || "") === String(user.id) ? "clickable selected" : "clickable"}
                       onClick={() => onOpenUser(user)}
                     >
-                      <td>{getFirstName(user) || "Not available"}</td>
-                      <td>{getLastName(user) || "Not available"}</td>
+                      <td>
+                        <div className="profile-cell">
+                          <ProfileAvatar user={user} size="small" />
+                          <div>
+                            <strong>{getDisplayName(user)}</strong>
+                            <span>{user.socialProfile?.platform || "No social"}</span>
+                          </div>
+                        </div>
+                      </td>
                       <td>{user.email}</td>
+                      <td>{user.referralCode || "No code"}</td>
+                      <td>
+                        <div className="referral-cell">
+                          <strong>{getReferralSummary(user).referredCreatorCount || 0} users</strong>
+                          <span>{formatCurrency(getReferralSummary(user).totalReferredGrossRevenue || 0)}</span>
+                          <small>{getReferralSummary(user).qualifiedReferralCount || 0} qualified</small>
+                        </div>
+                      </td>
                       <td>{formatDate(user.createdAt)}</td>
                       <td>
                         <div className="identity-actions">
@@ -3329,7 +3369,7 @@ function UsersView({
                   ))
                 ) : (
                   <tr>
-                    <td colSpan="5" className="empty-cell">
+                    <td colSpan="6" className="empty-cell">
                       No user records found
                     </td>
                   </tr>
@@ -3363,6 +3403,59 @@ function identityVerificationLabel(status) {
   return "Not verified"
 }
 
+function ProfileAvatar({ user, size = "normal" }) {
+  return (
+    <div className={size === "small" ? "profile-avatar small" : "profile-avatar"}>
+      {user?.profileImage ? (
+        <img src={user.profileImage} alt={getDisplayName(user)} />
+      ) : (
+        <span>{getInitials(user)}</span>
+      )}
+    </div>
+  )
+}
+
+function ReferralMetricCard({ label, value }) {
+  return (
+    <div className="metric-card">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  )
+}
+
+function ReferralCreatorList({ creators }) {
+  if (!creators.length) {
+    return <EmptyState icon={Users} title="No referred creators yet" compact />
+  }
+
+  return (
+    <div className="referral-list">
+      {creators.map((creator) => (
+        <article key={creator.id} className="referral-card">
+          <div className="referral-card-head">
+            <ProfileAvatar user={creator} size="small" />
+            <div>
+              <strong>{getDisplayName(creator)}</strong>
+              <span>{creator.email || "No email"}</span>
+            </div>
+            <StatusPill status={creator.qualified ? "qualified" : "pending"} />
+          </div>
+          <div className="referral-stats">
+            <span>Total received: {formatCurrency(creator.grossRevenue || 0)}</span>
+            <span>Creator earnings: {formatCurrency(creator.creatorRevenue || 0)}</span>
+            <span>Pending: {formatCurrency(creator.pendingCreatorRevenue || 0)}</span>
+            <span>Paid out: {formatCurrency(creator.totalPaidOut || 0)}</span>
+          </div>
+          <div className="referral-progress">
+            <div style={{ width: `${Math.min(100, Number(creator.progressPercent || 0))}%` }} />
+          </div>
+        </article>
+      ))}
+    </div>
+  )
+}
+
 function UserDetailPanel({ user, details, edit, busyAction, onEditChange, onSaveUser, onRequeryPaystack, onVerifyIdentity }) {
   if (!user) {
     return <EmptyState icon={UserCog} title="Select a user record" compact />
@@ -3374,18 +3467,39 @@ function UserDetailPanel({ user, details, edit, busyAction, onEditChange, onSave
   const changeRequests = Array.isArray(details?.changeRequests) ? details.changeRequests : []
   const wallet = user.wallet || {}
   const balance = details?.balance || {}
+  const referralSummary = getReferralSummary(user, details)
+  const referredCreators = Array.isArray(referralSummary.referredCreators) ? referralSummary.referredCreators : []
+  const socialDestination = getSocialDestination(user)
 
   return (
     <section className="user-detail">
       <div className="user-card-head">
-        <div>
-          <p className="eyebrow">{user.email}</p>
-          <h2>{user.name || "Creator"}</h2>
+        <div className="profile-heading">
+          <ProfileAvatar user={user} />
+          <div>
+            <p className="eyebrow">{user.email}</p>
+            <h2>{getDisplayName(user)}</h2>
+            <div className="mini-meta-row">
+              <span>Referral: {user.referralCode || "No code"}</span>
+              {socialDestination ? (
+                <a href={socialDestination} target="_blank" rel="noreferrer">
+                  Open social
+                </a>
+              ) : null}
+            </div>
+          </div>
         </div>
         <div className="pill-row">
           <StatusPill status={user.status || "active"} />
           <StatusPill status={payoutProfile.locked ? "verified" : "missing"} />
         </div>
+      </div>
+
+      <div className="referral-summary-grid">
+        <ReferralMetricCard label="Referred users" value={referralSummary.referredCreatorCount || 0} />
+        <ReferralMetricCard label="Qualified referrals" value={referralSummary.qualifiedReferralCount || 0} />
+        <ReferralMetricCard label="Referred total received" value={formatCurrency(referralSummary.totalReferredGrossRevenue || 0)} />
+        <ReferralMetricCard label="Referred creator earnings" value={formatCurrency(referralSummary.totalReferredCreatorRevenue || 0)} />
       </div>
 
       <div className="user-grid">
@@ -3578,6 +3692,17 @@ function UserDetailPanel({ user, details, edit, busyAction, onEditChange, onSave
               .join(" ") || "No legal name",
           ]}
         />
+        <InfoBlock
+          icon={Users}
+          title="Referral Network"
+          rows={[
+            `Referral code: ${user.referralCode || "No code"}`,
+            `Referred by: ${user.referredByCode || "Direct signup"}`,
+            `Qualifying amount: ${formatCurrency(referralSummary.qualifyingDonationAmount || 0)}`,
+            `Pending from referrals: ${formatCurrency(referralSummary.totalReferredPendingRevenue || 0)}`,
+            `Paid out by referred users: ${formatCurrency(referralSummary.totalReferredPaidOut || 0)}`,
+          ]}
+        />
       </div>
 
       <div className="action-row split">
@@ -3631,6 +3756,17 @@ function UserDetailPanel({ user, details, edit, busyAction, onEditChange, onSave
           <ShieldCheck size={17} />
           Verify Both
         </button>
+      </div>
+
+      <div className="detail-section">
+        <div className="section-heading compact-heading">
+          <div>
+            <p className="eyebrow">Referral Data</p>
+            <h2>Creators referred by this user</h2>
+          </div>
+          <span>{referredCreators.length}</span>
+        </div>
+        <ReferralCreatorList creators={referredCreators} />
       </div>
 
       <div className="detail-section">

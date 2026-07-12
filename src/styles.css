@@ -480,6 +480,77 @@ h2 {
   gap: 12px;
 }
 
+.profile-heading,
+.profile-cell,
+.referral-card-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.profile-avatar {
+  display: flex;
+  width: 58px;
+  height: 58px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 2px solid rgba(236, 72, 153, 0.35);
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(147, 51, 234, 0.22), rgba(236, 72, 153, 0.18));
+  color: #f5d0fe;
+  font-weight: 900;
+}
+
+.profile-avatar.small {
+  width: 38px;
+  height: 38px;
+  border-width: 1px;
+  font-size: 0.78rem;
+}
+
+.profile-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.profile-cell strong,
+.profile-cell span,
+.mini-meta-row span,
+.mini-meta-row a,
+.referral-card-head strong,
+.referral-card-head span {
+  display: block;
+  overflow: hidden;
+  max-width: 180px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-cell span,
+.referral-card-head span {
+  margin-top: 3px;
+  color: #8b98a7;
+  font-size: 0.74rem;
+}
+
+.mini-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+  color: #8b98a7;
+  font-size: 0.78rem;
+}
+
+.mini-meta-row a {
+  color: #67e8f9;
+  text-decoration: none;
+}
+
 .status-pill {
   border-radius: 999px;
   padding: 5px 9px;
@@ -687,6 +758,87 @@ h2 {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
   margin-top: 14px;
+}
+
+.referral-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.metric-card {
+  border: 1px solid #1f2937;
+  border-radius: 8px;
+  background: #0a0f17;
+  padding: 13px;
+}
+
+.metric-card span,
+.referral-cell span,
+.referral-cell small {
+  display: block;
+  color: #8b98a7;
+  font-size: 0.74rem;
+}
+
+.metric-card strong {
+  display: block;
+  margin-top: 6px;
+  color: #eaf0f6;
+  font-size: 1rem;
+}
+
+.referral-cell {
+  display: grid;
+  gap: 3px;
+}
+
+.referral-cell strong {
+  color: #eaf0f6;
+}
+
+.referral-list {
+  display: grid;
+  gap: 10px;
+}
+
+.referral-card {
+  border: 1px solid #1f2937;
+  border-radius: 8px;
+  background: #0a0f17;
+  padding: 12px;
+}
+
+.referral-card-head {
+  justify-content: space-between;
+}
+
+.referral-card-head > div:nth-child(2) {
+  min-width: 0;
+  flex: 1;
+}
+
+.referral-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 12px;
+  margin-top: 12px;
+  color: #9ba8b7;
+  font-size: 0.78rem;
+}
+
+.referral-progress {
+  height: 5px;
+  overflow: hidden;
+  margin-top: 12px;
+  border-radius: 999px;
+  background: #172033;
+}
+
+.referral-progress div {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #a855f7, #ec4899, #22d3ee);
 }
 
 .info-block {
@@ -957,6 +1109,8 @@ h2 {
     .two-col,
     .user-grid,
     .ops-grid,
+    .referral-summary-grid,
+    .referral-stats,
     .queue-layout,
     .user-layout {
     grid-template-columns: 1fr;
