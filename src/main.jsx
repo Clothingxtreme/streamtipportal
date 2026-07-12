@@ -27,6 +27,22 @@ import {
 import "./styles.css"
 
 const LOCAL_API_URL = "http://localhost:5000"
+const PUBLIC_SITE_URL = "https://streamtips.live"
+
+function redirectLegacyPublicRoutes() {
+  if (typeof window === "undefined") return false
+
+  const pathname = String(window.location.pathname || "/")
+    .replace(/\/+$/, "")
+    .toLowerCase()
+
+  if (pathname !== "/register") {
+    return false
+  }
+
+  window.location.replace(`${PUBLIC_SITE_URL}/register${window.location.search || ""}${window.location.hash || ""}`)
+  return true
+}
 
 function resolvePortalApiBaseUrl() {
   const configuredUrl = String(import.meta.env.VITE_API_BASE_URL || "").trim()
@@ -3866,8 +3882,10 @@ function InfoBlock({ icon: Icon, title, rows }) {
   )
 }
 
-createRoot(document.getElementById("root")).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-)
+if (!redirectLegacyPublicRoutes()) {
+  createRoot(document.getElementById("root")).render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>,
+  )
+}
