@@ -20,6 +20,7 @@ import {
   RotateCcw,
   Search,
   ShieldCheck,
+  Trash2,
   UserCog,
   Users,
   X,
@@ -1879,6 +1880,26 @@ function App() {
                 return buildVerificationToast(payload, type)
               })
             }
+            onDeleteUser={(user) =>
+              runAction(`delete-user-${user.id}`, async () => {
+                const reason = window.prompt("Reason for archiving this user (stored in the audit trail):") || ""
+                if (!reason.trim()) {
+                  throw new Error("An archive reason is required.")
+                }
+                if (!window.confirm(`Archive ${user.email}? Their financial, KYC, and audit records will be retained.`)) {
+                  return "Archive cancelled."
+                }
+
+                await request(`/portal/users/${user.id}`, {
+                  method: "DELETE",
+                  body: JSON.stringify({ reason: reason.trim() }),
+                })
+                setSelectedUserId("")
+                setSelectedUserDetails(null)
+                await loadUsers({ page: usersPagination.page || 1 })
+                return "User archived. Access has been revoked and records are retained for compliance."
+              })
+            }
           />
         ) : null}
       </main>
@@ -3251,6 +3272,7 @@ function UsersView({
   onSaveUser,
   onRequeryPaystack,
   onVerifyIdentity,
+  onDeleteUser,
 }) {
   const [identityVisibility, setIdentityVisibility] = useState({})
 
@@ -3390,6 +3412,7 @@ function UsersView({
           onSaveUser={onSaveUser}
           onRequeryPaystack={onRequeryPaystack}
           onVerifyIdentity={onVerifyIdentity}
+          onDeleteUser={onDeleteUser}
         />
       </div>
     </section>
@@ -3456,7 +3479,7 @@ function ReferralCreatorList({ creators }) {
   )
 }
 
-function UserDetailPanel({ user, details, edit, busyAction, onEditChange, onSaveUser, onRequeryPaystack, onVerifyIdentity }) {
+function UserDetailPanel({ user, details, edit, busyAction, onEditChange, onSaveUser, onRequeryPaystack, onVerifyIdentity, onDeleteUser }) {
   if (!user) {
     return <EmptyState icon={UserCog} title="Select a user record" compact />
   }
@@ -3726,6 +3749,19 @@ function UserDetailPanel({ user, details, edit, busyAction, onEditChange, onSave
             Requery Paystack VA
           </button>
         ) : null}
+      </div>
+
+      <div className="action-row split">
+        <button
+          type="button"
+          className="button danger"
+          disabled={busyAction === `delete-user-${user.id}`}
+          onClick={() => onDeleteUser(user)}
+        >
+          <Trash2 size={17} />
+          Archive User
+        </button>
+        <p className="notice warning">Archiving revokes access but retains financial, KYC, and audit data.</p>
       </div>
 
       <div className="action-row split">
